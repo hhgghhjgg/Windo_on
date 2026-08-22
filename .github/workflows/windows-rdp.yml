@@ -1,45 +1,56 @@
-name: Linux Hermes Desktop
+name: Windows Cloud RDP
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-      - name: 1. Install Desktop
+      - name: 1. Enable Remote Desktop & Firewall
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y xfce4 xvfb x11vnc novnc websockify g++ curl xz-utils git
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
 
-      - name: 2. Start Desktop
+      - name: 2. Create Admin Account
         run: |
-          nohup Xvfb :99 -screen 0 1280x800x24 > /tmp/xvfb.log 2>&1 &
-          sleep 3
-          DISPLAY=:99 nohup startxfce4 > /tmp/xfce.log 2>&1 &
-          sleep 5
-          nohup x11vnc -display :99 -forever -shared -passwd MyPass123 > /tmp/vnc.log 2>&1 &
-          sleep 2
-          nohup websockify --web /usr/share/novnc 6080 localhost:5900 > /tmp/novnc.log 2>&1 &
-          sleep 2
+          $Password = ConvertTo-SecureString "Cynet@2026" -AsPlainText -Force
+          New-LocalUser -Name "CynetAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "CynetAdmin" -ErrorAction SilentlyContinue
+          net user runneradmin Cynet@2026
 
-      - name: 3. Public Tunnel
+      - name: 3. Install & Connect Tailscale VPN
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared
-          nohup ./cloudflared tunnel --url http://localhost:6080 > /tmp/cf.log 2>&1 &
-          sleep 15
-          echo "=================================================="
-          echo "  >>> DESKTOP READY! <<<"
-          grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cf.log | head -1 | xargs -I {} echo "  Link: {}/vnc.html"
-          echo "  Password: MyPass123"
-          echo "=================================================="
+          # Download and install Tailscale silently
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
+          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
+          
+          # Connect to Tailscale network
+          Start-Sleep -Seconds 5
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
+          
+          Start-Sleep -Seconds 8
+          
+          # Get Tailscale IP
+          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
+          Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
+          Write-Host "  Username     : CynetAdmin" -ForegroundColor Yellow
+          Write-Host "  Password     : Cynet@2026" -ForegroundColor Yellow
+          Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
+          Write-Host "==================================================" -ForegroundColor Green
 
-      - name: 4. Keep Alive
+      - name: 4. Keep Server Alive (6 Hours)
         run: |
-          for i in $(seq 1 360); do
-            sleep 60
-            echo "[$i/360] Running..."
-          done
+          for ($i = 1; $i -le 360; $i++) {
+            Start-Sleep -Seconds 60
+            Write-Host "[$i/360] Server running..."
+          }
